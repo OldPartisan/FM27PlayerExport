@@ -6,7 +6,7 @@ using HarmonyLib;
 
 namespace FM26PlayerExport;
 
-[BepInPlugin("com.koda.fm26.playerexport", "FM26 Player Export (macOS)", "5.1.0-macos")]
+[BepInPlugin("com.koda.fm26.playerexport", "FM26 Player Export (macOS)", "5.2.0-macos")]
 public class Plugin : BasePlugin
 {
 	internal static ManualLogSource Log;

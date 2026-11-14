@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.1 — 2026-11-14
+
+**Fixed: export captured only the rows visible on screen.**
+
+Long lists in FM27 are virtualised — the table container only holds the rows
+that are currently rendered, so a squad or transfer list of 60-70 players
+exported as the ~15 rows that happened to fit on the screen.
+
+* Added scroll capture to `Fm27GridTableHandler`:
+  * finds the table's `ScrollView` via `GetFirstAncestorOfType<ScrollView>()`
+    and resets it to the top;
+  * scrolls one third of the viewport per step (a full viewport jumps too far
+    and can skip rows);
+  * waits `ScrollStepDelayFrames` (default 30) between steps so the virtualised
+    list can render;
+  * accumulates rows with de-duplication by row signature, so overlapping
+    rows are not written twice;
+  * stops when `scrollOffset` no longer changes, with a 300-step safety cap;
+  * writes the CSV/HTML from the accumulated rows.
+* If the `ScrollView` cannot be found, the plugin logs a warning and exports
+  whatever is visible instead of failing.
+* Plugin version bumped to 5.2.0.
+
 ## v1.0 — 2026-11-12
 
 First public FM27 build.

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using FM26PlayerExport;
+using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace FM26PlayerExport.Handlers;
@@ -18,6 +19,13 @@ public sealed class Fm27GridTableHandler : IExportHandler
 	private VisualElement _rows;
 	private List<string> _headers;
 	private bool _done;
+
+	private ScrollView _scroll;
+	private float _lastScrollY = -1f;
+	private int _scrollAttempts;
+	private int _waitFrames;
+	private readonly List<List<string>> _rowsData = new List<List<string>>();
+	private readonly HashSet<string> _seen = new HashSet<string>();
 
 	private int headerListSourceCount() { return _headers == null ? 0 : _headers.Count; }
 
@@ -138,6 +146,26 @@ public sealed class Fm27GridTableHandler : IExportHandler
 		_rows = rowsRoot;
 		_headers = headerTexts;
 		_done = false;
+		_rowsData.Clear();
+		_seen.Clear();
+		_scrollAttempts = 0;
+		_lastScrollY = -1f;
+		_waitFrames = 1;
+		_scroll = null;
+		try { _scroll = _rows.GetFirstAncestorOfType<ScrollView>(); } catch { }
+		if (_scroll == null && _rows.parent != null)
+		{
+			try { _scroll = _rows.parent.GetFirstAncestorOfType<ScrollView>(); } catch { }
+		}
+		if (_scroll != null)
+		{
+			try { _scroll.scrollOffset = Vector2.zero; } catch { }
+			Plugin.Log.LogInfo("[FM27] прокрутка: найдена ScrollView, стартую с верха");
+		}
+		else
+		{
+			Plugin.Log.LogWarning("[FM27] прокрутка: ScrollView не найдена, выгружу только видимое");
+		}
 		Plugin.Log.LogInfo("[FM27] Таблица: колонок " + _headers.Count + ", строк " + rowsRoot.childCount);
 		return true;
 	}
@@ -145,16 +173,64 @@ public sealed class Fm27GridTableHandler : IExportHandler
 	public bool CaptureStep()
 	{
 		if (_done) return true;
-		_done = true;
 		try
 		{
-			WriteAll();
+			if (_waitFrames > 0) { _waitFrames--; return false; }
+
+			CollectVisible();
+
+			if (_scroll == null) { _done = true; WriteAll(); return true; }
+
+			float y = 0f;
+			try { y = _scroll.scrollOffset.y; } catch { }
+			float viewH = 0f;
+			try { viewH = _scroll.layout.height; } catch { }
+			if (viewH <= 0f) viewH = 400f;
+			float step = Math.Max(40f, viewH / 3f);
+
+			bool atEnd = _lastScrollY >= 0f && Math.Abs(y - _lastScrollY) < 0.5f;
+			if (atEnd || _scrollAttempts >= 300)
+			{
+				Plugin.Log.LogInfo("[FM27] прокрутка завершена: шагов " + _scrollAttempts + ", строк собрано " + _rowsData.Count);
+				_done = true;
+				WriteAll();
+				return true;
+			}
+
+			_lastScrollY = y;
+			_scrollAttempts++;
+			try { _scroll.scrollOffset = new Vector2(0f, y + step); } catch { }
+			_waitFrames = Math.Max(1, PluginConfig.EffectiveScrollStepDelayFrames);
+			return false;
 		}
 		catch (Exception e)
 		{
-			Plugin.Log.LogError("[FM27] Ошибка записи: " + e);
+			Plugin.Log.LogError("[FM27] Ошибка захвата: " + e);
+			try { _done = true; WriteAll(); } catch { }
+			return true;
 		}
-		return true;
+	}
+
+	private void CollectVisible()
+	{
+		if (_rows == null) return;
+		int n = 0;
+		try { n = _rows.childCount; } catch { }
+		for (int r = 0; r < n; r++)
+		{
+			VisualElement row = null;
+			try { row = _rows.ElementAt(r); } catch { }
+			if (row == null) continue;
+			VisualElement cells = CellRoot(row);
+			if (cells == null || cells.childCount == 0) continue;
+			var values = new List<string>();
+			for (int c = 0; c < cells.childCount; c++)
+				values.Add(TextOf(cells.ElementAt(c)).Replace(";", ",").Replace("\n", " "));
+			if (values.Count == 0) continue;
+			string key = string.Join("|", values.ToArray());
+			if (string.IsNullOrWhiteSpace(key.Replace("|", "").Trim())) continue;
+			if (_seen.Add(key)) _rowsData.Add(values);
+		}
 	}
 
 	private void WriteAll()
@@ -172,13 +248,8 @@ public sealed class Fm27GridTableHandler : IExportHandler
 		string htmlPath = Path.Combine(htmlDir, "fm27_table_" + stamp + ".html");
 
 		int written = 0;
-		// число колонок = число ячеек в первой строке; заголовки подрезаем под него
-		int cols = 0;
-		if (_rows.childCount > 0)
-		{
-			var firstCells = CellRoot(_rows.ElementAt(0));
-			if (firstCells != null) cols = firstCells.childCount;
-		}
+		// число колонок = число ячеек в первой собранной строке; заголовки подрезаем под него
+		int cols = _rowsData.Count > 0 ? _rowsData[0].Count : 0;
 		// В FM27 первый заголовок пустой, а «Выбран» стоит на месте колонки-иконки.
 		if (headerListSourceCount() > 1 && string.IsNullOrWhiteSpace(_headers[0]) && !string.IsNullOrWhiteSpace(_headers[1]))
 		{
@@ -195,24 +266,11 @@ public sealed class Fm27GridTableHandler : IExportHandler
 		using (var csv = new StreamWriter(csvPath, false, new UTF8Encoding(false), 65536))
 		{
 			csv.WriteLine(string.Join(";", headerList));
-			int cellCount = 0;
-			for (int r = 0; r < _rows.childCount; r++)
+			for (int r = 0; r < _rowsData.Count; r++)
 			{
-				VisualElement row = _rows.ElementAt(r);
-				VisualElement cells = CellRoot(row);
-				if (cells == null) continue;
-				var values = new List<string>();
-				for (int c = 0; c < cells.childCount; c++)
-				{
-					string t = TextOf(cells.ElementAt(c));
-					values.Add(t.Replace(";", ",").Replace("\n", " "));
-				}
+				var values = _rowsData[r];
 				if (r == 0)
-				{
-					cellCount = values.Count;
 					Plugin.Log.LogInfo("[FM27] первая строка: ячеек " + values.Count + " -> " + string.Join(" | ", values.GetRange(0, Math.Min(10, values.Count))));
-				}
-				if (values.Count == 0) continue;
 				csv.WriteLine(string.Join(";", values));
 				written++;
 			}
@@ -225,14 +283,12 @@ public sealed class Fm27GridTableHandler : IExportHandler
 			html.WriteLine("</head><body><table><tr>");
 			foreach (var h in headerList) html.WriteLine("<th>" + System.Net.WebUtility.HtmlEncode(h) + "</th>");
 			html.WriteLine("</tr>");
-			for (int r = 0; r < _rows.childCount; r++)
+			for (int r = 0; r < _rowsData.Count; r++)
 			{
-				VisualElement row = _rows.ElementAt(r);
-				VisualElement cells = CellRoot(row);
-				if (cells == null || cells.childCount == 0) continue;
+				var values = _rowsData[r];
 				html.WriteLine("<tr>");
-				for (int c = 0; c < cells.childCount; c++)
-					html.WriteLine("<td>" + System.Net.WebUtility.HtmlEncode(TextOf(cells.ElementAt(c))) + "</td>");
+				for (int c = 0; c < values.Count; c++)
+					html.WriteLine("<td>" + System.Net.WebUtility.HtmlEncode(values[c]) + "</td>");
 				html.WriteLine("</tr>");
 			}
 			html.WriteLine("</table></body></html>");
@@ -249,5 +305,11 @@ public sealed class Fm27GridTableHandler : IExportHandler
 		_rows = null;
 		_headers = null;
 		_done = false;
+		_scroll = null;
+		_rowsData.Clear();
+		_seen.Clear();
+		_lastScrollY = -1f;
+		_scrollAttempts = 0;
+		_waitFrames = 0;
 	}
 }

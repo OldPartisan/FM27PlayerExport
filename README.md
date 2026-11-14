@@ -1,6 +1,6 @@
 # FM27 Player Export (macOS / Windows)
 
-[![Release](https://img.shields.io/badge/release-v1.0-blue)](../../releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.1-blue)](../../releases/latest)
 [![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
 Export any visible table in **Football Manager 27** (squad, player search,
